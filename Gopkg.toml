@@ -1,0 +1,19 @@
+[[constraint]]
+  name = "github.com/openfaas-incubator/connector-sdk"
+  version = "0.4.3"
+
+[[constraint]]
+  name = "github.com/joncalhoun/qson"
+  branch = "master"
+
+[[constraint]]
+  name = "github.com/sirupsen/logrus"
+  branch = "master"
+
+[[constraint]]
+  name = "github.com/google/uuid"
+  version = "v1.1.1"
+
+[prune]
+  go-tests = true
+  unused-packages = true
