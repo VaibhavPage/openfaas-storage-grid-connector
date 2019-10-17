@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/mux"
 	"github.com/joncalhoun/qson"
+	"github.com/openfaas-incubator/connector-sdk/types"
 	"github.com/sirupsen/logrus"
 )
 
@@ -25,6 +27,8 @@ type storageGridConfiguration struct {
 	port string
 	// logger
 	logger *logrus.Logger
+	// controller is a connector SDK controller
+	controller *types.Controller
 }
 
 // routeConfiguration configures a REST endpoint that consumes StorageGrid events
@@ -98,7 +102,85 @@ func generateUUID() uuid.UUID {
 }
 
 func main() {
+	creds := types.GetCredentials()
+	gatewayURL, ok := os.LookupEnv("GATEWAY_URL")
+	if !ok {
+		panic("gateway url is not specified")
+	}
 
+	upstreamTimeout := time.Second * 30
+	rebuildInterval := time.Second * 3
+
+	if val, exists := os.LookupEnv("upstream_timeout"); exists {
+		parsedVal, err := time.ParseDuration(val)
+		if err == nil {
+			upstreamTimeout = parsedVal
+		}
+	}
+
+	if val, exists := os.LookupEnv("rebuild_interval"); exists {
+		parsedVal, err := time.ParseDuration(val)
+		if err == nil {
+			rebuildInterval = parsedVal
+		}
+	}
+
+	printResponse := false
+	if val, exists := os.LookupEnv("print_response"); exists {
+		printResponse = val == "1" || val == "true"
+	}
+
+	printResponseBody := false
+	if val, exists := os.LookupEnv("print_response_body"); exists {
+		printResponseBody = val == "1" || val == "true"
+	}
+
+	delimiter := ","
+	if val, exists := os.LookupEnv("topic_delimiter"); exists {
+		if len(val) > 0 {
+			delimiter = val
+		}
+	}
+
+	asynchronousInvocation := false
+	if val, exists := os.LookupEnv("asynchronous_invocation"); exists {
+		asynchronousInvocation = val == "1" || val == "true"
+	}
+
+	config := &types.ControllerConfig{
+		UpstreamTimeout:          upstreamTimeout,
+		GatewayURL:               gatewayURL,
+		PrintResponse:            printResponse,
+		PrintResponseBody:        printResponseBody,
+		RebuildInterval:          rebuildInterval,
+		TopicAnnotationDelimiter: delimiter,
+		AsyncFunctionInvocation:  asynchronousInvocation,
+	}
+
+	controller := types.NewController(creds, config)
+
+	controller.BeginMapBuilder()
+
+	r := mux.NewRouter()
+
+	sgCfg, err := newStorageGridConfiguration()
+	if err != nil {
+		panic(err)
+	}
+	sgCfg.controller = controller
+
+	for endpoint, _ := range sgCfg.routes {
+		r.HandleFunc(endpoint, sgCfg.handler).Methods(http.MethodHead, http.MethodPost)
+	}
+
+	server := http.Server{
+		Addr:    fmt.Sprintf(":%s", sgCfg.port),
+		Handler: r,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
+		panic(err)
+	}
 }
 
 func (sgCfg *storageGridConfiguration) handler(writer http.ResponseWriter, request *http.Request) {
@@ -152,13 +234,14 @@ func (sgCfg *storageGridConfiguration) handler(writer http.ResponseWriter, reque
 		return
 	}
 
-	if filterName(notification, sgCfg.routes[request.URL.Path]) {
-		writer.WriteHeader(http.StatusOK)
-		writer.Write([]byte("ok"))
-		return
+	if !filterName(notification, sgCfg.routes[request.URL.Path]) {
+		sgCfg.logger.Warn("discarding notification since it did not pass all filters")
 	}
 
-	sgCfg.logger.Warn("discarding notification since it did not pass all filters")
+	writer.WriteHeader(http.StatusOK)
+	writer.Write([]byte("ok"))
+
+	sgCfg.controller.Invoke(strings.TrimLeft(request.URL.Path, "/"), &body)
 }
 
 // filterName filters object key based on configured prefix and/or suffix

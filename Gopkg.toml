@@ -14,6 +14,10 @@
   name = "github.com/google/uuid"
   version = "v1.1.1"
 
+[[constraints]]
+  name = "github.com/gorilla/mux"
+  version = "v1.7.3"
+
 [prune]
   go-tests = true
   unused-packages = true
